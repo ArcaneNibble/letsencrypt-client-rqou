@@ -1,0 +1,5 @@
+*.json
+*.csr
+*.key
+*.pyc
+venv
