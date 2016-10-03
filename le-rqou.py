@@ -17,10 +17,15 @@ else:
 BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
 
+ACCOUNT_KEY_PATH = 'account_key.json'
+REGISTRATION_EMAIL = 'rqou@berkeley.edu'
+
+
 class ACMEError(Exception):
     def __init__(self, errdoc, headers):
         self.errdoc = errdoc
         self.headers = headers
+
 
 # Apparently you can occasionally get a bad nonce error for no reason at all
 class ACMENonceError(ACMEError):
@@ -28,16 +33,14 @@ class ACMENonceError(ACMEError):
         super().__init__(errdoc, headers)
         self.new_nonce = new_nonce
 
+
 # Returns (dict, nonce)
 def get_directory(url):
     req = urllib.request.Request(url=url)
     with urllib.request.urlopen(req) as f:
-        return (json.loads(f.read().decode('utf-8')), f.headers['Replay-Nonce'])
+        return (json.loads(f.read().decode('utf-8')),
+                f.headers['Replay-Nonce'])
 
-directory, nonce = get_directory(API_EP)
-new_reg_url = directory['new-reg']
-#print(new_reg_url)
-#print(get_new_nonce(API_EP))
 
 def nonce_retry(fn):
     def _nonce_retry_wrapper(*args):
@@ -52,6 +55,7 @@ def nonce_retry(fn):
                 args[1] = e.new_nonce
         raise Exception("Too many bad nonces!")
     return _nonce_retry_wrapper
+
 
 def load_private_key(file):
     with open(file, 'r') as f:
@@ -80,7 +84,6 @@ def load_private_key(file):
     pubkey = {'kty': 'RSA', 'e': privkey['e'], 'n': privkey['n']}
     return (fullkey, pubkey)
 
-privkey, pubkey = load_private_key("account_key.json")
 
 def _create_signed_object(payload, nonce, acckeypriv, acckeypub):
     protected = {
@@ -102,6 +105,7 @@ def _create_signed_object(payload, nonce, acckeypriv, acckeypub):
     }).encode('utf-8')
 
     return fullpayload
+
 
 # Returns ((uri, data, headers), nonce)
 @nonce_retry
@@ -130,6 +134,7 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
         if reg_data['status'] == 409:
             return ((reg_uri, reg_data, e.headers), new_nonce)
         raise ACMEError(reg_data, e.headers)
+
 
 # Returns nonce
 @nonce_retry
@@ -165,8 +170,6 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
             raise ACMENonceError(reg_data, e.headers, new_nonce)
         raise ACMEError(reg_data, e.headers)
 
-    print(old_tos, new_tos)
-
     if old_tos != new_tos:
         print("Agreeing to new TOS...")
 
@@ -194,6 +197,25 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
 
     return nonce
 
-((reg_uri, _, _), nonce) = do_account_register(new_reg_url, nonce, privkey, pubkey, 'rqou@berkeley.edu')
 
-nonce = do_tos(reg_uri, nonce, privkey, pubkey)
+def main():
+    print("Poking directory...")
+    directory, nonce = get_directory(API_EP)
+    new_reg_url = directory['new-reg']
+    new_authz_url = directory['new-authz']
+    new_cert_url = directory['new-cert']
+    print("URLs are:\n\tnew-reg: {}\n\tnew-authz: {}\n\tnew-cert: {}".format(
+        new_reg_url, new_authz_url, new_cert_url))
+
+    print("Loading account key...")
+    privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
+
+    print("Finding registration...")
+    ((reg_url, _, _), nonce) = do_account_register(new_reg_url, nonce,
+                                                   privkey, pubkey,
+                                                   REGISTRATION_EMAIL)
+    nonce = do_tos(reg_url, nonce, privkey, pubkey)
+    print("Registration is {}".format(reg_url))
+
+if __name__ == '__main__':
+    main()
