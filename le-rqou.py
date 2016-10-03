@@ -3,6 +3,7 @@ import jose.constants
 import jose.jwk
 import jose.jws
 import json
+import link_header
 import urllib.error
 import urllib.request
 
@@ -25,7 +26,6 @@ class ACMEError(Exception):
 class ACMENonceError(ACMEError):
     def __init__(self, errdoc, headers, new_nonce):
         super().__init__(errdoc, headers)
-        new_nonce = 'bar'
         self.new_nonce = new_nonce
 
 # Returns (dict, nonce)
@@ -45,13 +45,11 @@ def nonce_retry(fn):
             try:
                 return fn(*args)
             except ACMENonceError as e:
-                print(e)
-                print(e.new_nonce)
+                print("WARN: Bad nonce happened!")
                 # Really ugly, assumes all functions take the nonce as the
                 # second arg
                 args = list(args)
                 args[1] = e.new_nonce
-                print(args)
         raise Exception("Too many bad nonces!")
     return _nonce_retry_wrapper
 
@@ -84,15 +82,11 @@ def load_private_key(file):
 
 privkey, pubkey = load_private_key("account_key.json")
 
-# Returns ((uri, data, headers), nonce)
-@nonce_retry
-def do_account_register(url, nonce, acckeypriv, acckeypub, email):
-    payload = {
-        'contact': ['mailto:' + email]
-    }
+def _create_signed_object(payload, nonce, acckeypriv, acckeypub):
     protected = {
         'nonce': nonce,
-        'url': url,
+        # WTF? Why not needed?
+        # 'url': url,
         'jwk': acckeypub
     }
     sig = jose.jws.sign(payload, acckeypriv, protected,
@@ -107,6 +101,18 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
         'signature': enc_sig
     }).encode('utf-8')
 
+    return fullpayload
+
+# Returns ((uri, data, headers), nonce)
+@nonce_retry
+def do_account_register(url, nonce, acckeypriv, acckeypub, email):
+    payload = {
+        # WTF?
+        'resource': 'new-reg',
+        'contact': ['mailto:' + email]
+    }
+    fullpayload = _create_signed_object(payload, nonce, acckeypriv, acckeypub)
+
     req = urllib.request.Request(url=url, data=fullpayload, method='POST')
     try:
         with urllib.request.urlopen(req) as f:
@@ -120,8 +126,74 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
         new_nonce = e.headers['Replay-Nonce']
         if reg_data['type'] == BAD_NONCE_ERROR:
             raise ACMENonceError(reg_data, e.headers, new_nonce)
+        # Conflict is OK
+        if reg_data['status'] == 409:
+            return ((reg_uri, reg_data, e.headers), new_nonce)
         raise ACMEError(reg_data, e.headers)
-        #return ((reg_uri, reg_data, e.headers), new_nonce)
 
-nonce='foo'
-print(do_account_register(new_reg_url, nonce, privkey, pubkey, 'rqou@berkeley.edu'))
+# Returns nonce
+@nonce_retry
+def do_tos(url, nonce, acckeypriv, acckeypub):
+    payload = {
+        # WTF?
+        'resource': 'reg',
+    }
+    fullpayload = _create_signed_object(payload, nonce, acckeypriv, acckeypub)
+
+    req = urllib.request.Request(url=url, data=fullpayload, method='POST')
+    old_tos = None
+    new_tos = None
+    try:
+        with urllib.request.urlopen(req) as f:
+            reg_data = json.loads(f.read().decode('utf-8'))
+            nonce = f.headers['Replay-Nonce']
+
+            if 'agreement' in reg_data:
+                old_tos = reg_data['agreement']
+
+            for link in f.headers.get_all('Link'):
+                # We always have only one link
+                parsed_link = link_header.parse(link).links[0]
+                for attr_key, attr_val in parsed_link.attr_pairs:
+                    if attr_key == 'rel' and attr_val == 'terms-of-service':
+                        new_tos = parsed_link.href
+                        break
+    except urllib.error.HTTPError as e:
+        reg_data = json.loads(e.read().decode('utf-8'))
+        new_nonce = e.headers['Replay-Nonce']
+        if reg_data['type'] == BAD_NONCE_ERROR:
+            raise ACMENonceError(reg_data, e.headers, new_nonce)
+        raise ACMEError(reg_data, e.headers)
+
+    print(old_tos, new_tos)
+
+    if old_tos != new_tos:
+        print("Agreeing to new TOS...")
+
+        payload = {
+            # WTF?
+            'resource': 'reg',
+            'agreement': new_tos
+        }
+        fullpayload = _create_signed_object(payload, nonce,
+                                            acckeypriv, acckeypub)
+
+        req = urllib.request.Request(url=url, data=fullpayload, method='POST')
+
+        try:
+            with urllib.request.urlopen(req) as f:
+                reg_data = json.loads(f.read().decode('utf-8'))
+                nonce = f.headers['Replay-Nonce']
+                print(reg_data)
+        except urllib.error.HTTPError as e:
+            reg_data = json.loads(e.read().decode('utf-8'))
+            new_nonce = e.headers['Replay-Nonce']
+            if reg_data['type'] == BAD_NONCE_ERROR:
+                raise ACMENonceError(reg_data, e.headers, new_nonce)
+            raise ACMEError(reg_data, e.headers)
+
+    return nonce
+
+((reg_uri, _, _), nonce) = do_account_register(new_reg_url, nonce, privkey, pubkey, 'rqou@berkeley.edu')
+
+nonce = do_tos(reg_uri, nonce, privkey, pubkey)
