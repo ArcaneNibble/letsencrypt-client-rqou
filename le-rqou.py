@@ -23,8 +23,8 @@ def get_directory(url):
         return (json.loads(f.read().decode('utf-8')), f.headers[NONCE_HEADER])
 
 directory, nonce = get_directory(API_EP)
-new_authz_url = directory['new-authz']
-#print(new_authz_url)
+new_reg_url = directory['new-reg']
+#print(new_reg_url)
 #print(get_new_nonce(API_EP))
 
 # Really ugly, assumes all functions return the nonce as second arg
@@ -51,7 +51,10 @@ def load_private_key(file):
         assert (d * e) % ((p - 1) * (q - 1)) == 1
         assert (q * qi) % p == 1
 
-    fullkey = Crypto.PublicKey.RSA.construct((n, e, d, p, q, qi))
+    # WARNING! The PyCrypto API expects the last argument to be p^{-1} mod q,
+    # but the JSON file that certbot uses stores q^{-1} mod p. We therefore
+    # exchange p and q here.
+    fullkey = Crypto.PublicKey.RSA.construct((n, e, d, q, p, qi))
     pubkey = {'kty': 'RSA', 'e': privkey['e'], 'n': privkey['n']}
     return (fullkey, pubkey)
 
@@ -79,8 +82,6 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
         'signature': enc_sig
     }).encode('utf-8')
 
-    print(fullpayload)
-    print(url)
     req = urllib.request.Request(url=url, data=fullpayload, method='POST')
     try:
         with urllib.request.urlopen(req) as f:
@@ -89,4 +90,4 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
         return (e.read(), e.headers.as_string())
 
 nonce='foo'
-print(do_account_register(new_authz_url, nonce, privkey, pubkey, 'rqou@berkeley.edu'))
+print(do_account_register(new_reg_url, nonce, privkey, pubkey, 'rqou@berkeley.edu'))
