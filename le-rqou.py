@@ -13,23 +13,47 @@ if USE_STAGING:
 else:
     API_EP = 'https://acme-v01.api.letsencrypt.org/directory'
 
-NONCE_HEADER = 'Replay-Nonce'
+BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
+
+class ACMEError(Exception):
+    def __init__(self, errdoc, headers):
+        self.errdoc = errdoc
+        self.headers = headers
+
+# Apparently you can occasionally get a bad nonce error for no reason at all
+class ACMENonceError(ACMEError):
+    def __init__(self, errdoc, headers, new_nonce):
+        super().__init__(errdoc, headers)
+        new_nonce = 'bar'
+        self.new_nonce = new_nonce
 
 # Returns (dict, nonce)
 def get_directory(url):
     req = urllib.request.Request(url=url)
     with urllib.request.urlopen(req) as f:
-        return (json.loads(f.read().decode('utf-8')), f.headers[NONCE_HEADER])
+        return (json.loads(f.read().decode('utf-8')), f.headers['Replay-Nonce'])
 
 directory, nonce = get_directory(API_EP)
 new_reg_url = directory['new-reg']
 #print(new_reg_url)
 #print(get_new_nonce(API_EP))
 
-# Really ugly, assumes all functions return the nonce as second arg
 def nonce_retry(fn):
-    pass
+    def _nonce_retry_wrapper(*args):
+        for _ in range(NONCE_RETRIES):
+            try:
+                return fn(*args)
+            except ACMENonceError as e:
+                print(e)
+                print(e.new_nonce)
+                # Really ugly, assumes all functions take the nonce as the
+                # second arg
+                args = list(args)
+                args[1] = e.new_nonce
+                print(args)
+        raise Exception("Too many bad nonces!")
+    return _nonce_retry_wrapper
 
 def load_private_key(file):
     with open(file, 'r') as f:
@@ -60,7 +84,8 @@ def load_private_key(file):
 
 privkey, pubkey = load_private_key("account_key.json")
 
-# Returns ((uri, tos_old, tos_new), nonce)
+# Returns ((uri, data, headers), nonce)
+@nonce_retry
 def do_account_register(url, nonce, acckeypriv, acckeypub, email):
     payload = {
         'contact': ['mailto:' + email]
@@ -85,9 +110,18 @@ def do_account_register(url, nonce, acckeypriv, acckeypub, email):
     req = urllib.request.Request(url=url, data=fullpayload, method='POST')
     try:
         with urllib.request.urlopen(req) as f:
-            return (f.read(), f.headers.as_string())
+            reg_uri = f.headers['Location']
+            reg_data = json.loads(f.read().decode('utf-8'))
+            new_nonce = f.headers['Replay-Nonce']
+            return ((reg_uri, reg_data, f.headers), new_nonce)
     except urllib.error.HTTPError as e:
-        return (e.read(), e.headers.as_string())
+        reg_uri = e.headers['Location']
+        reg_data = json.loads(e.read().decode('utf-8'))
+        new_nonce = e.headers['Replay-Nonce']
+        if reg_data['type'] == BAD_NONCE_ERROR:
+            raise ACMENonceError(reg_data, e.headers, new_nonce)
+        raise ACMEError(reg_data, e.headers)
+        #return ((reg_uri, reg_data, e.headers), new_nonce)
 
 nonce='foo'
 print(do_account_register(new_reg_url, nonce, privkey, pubkey, 'rqou@berkeley.edu'))
