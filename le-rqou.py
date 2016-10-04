@@ -1,3 +1,5 @@
+import asn1crypto.csr
+import asn1crypto.pem
 import Crypto.PublicKey.RSA
 import jose.constants
 import jose.jwk
@@ -18,6 +20,7 @@ BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
 
 ACCOUNT_KEY_PATH = 'account_key.json'
+CSR_PATH = 'test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 
 
@@ -187,7 +190,6 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
             with urllib.request.urlopen(req) as f:
                 reg_data = json.loads(f.read().decode('utf-8'))
                 nonce = f.headers['Replay-Nonce']
-                print(reg_data)
         except urllib.error.HTTPError as e:
             reg_data = json.loads(e.read().decode('utf-8'))
             new_nonce = e.headers['Replay-Nonce']
@@ -198,7 +200,49 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
     return nonce
 
 
+# Returns (csr_der, domains)
+def load_csr(path):
+    with open(path, 'rb') as f:
+        csr_pem = f.read()
+    _, _, csr_der = asn1crypto.pem.unarmor(csr_pem)
+    csr_obj = asn1crypto.csr.CertificationRequest.load(csr_der)
+
+    domains = set()
+
+    # CN
+    subj = csr_obj['certification_request_info']['subject'].native
+    if 'common_name' in subj:
+        cn = subj['common_name']
+        domains.add(cn)
+
+    # SAN
+    attribs = csr_obj['certification_request_info']['attributes'].native
+    san = None
+    for attrib in attribs:
+        if attrib['type'] == 'extension_request':
+            extns_set = attrib['values']
+            for extns in extns_set:
+                for extn in extns:
+                    if extn['extn_id'] == 'subject_alt_name':
+                        # Can't have multiple SAN blocks??
+                        assert san is None
+                        san = extn['extn_value']
+                        break
+    if san is not None:
+        domains = domains.union(san)
+
+    assert len(domains) > 0
+    return (csr_der, domains)
+
+
 def main():
+    print("Loading account key...")
+    privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
+
+    print("Loading CSR...")
+    print(load_csr(CSR_PATH))
+    return
+
     print("Poking directory...")
     directory, nonce = get_directory(API_EP)
     new_reg_url = directory['new-reg']
@@ -206,9 +250,6 @@ def main():
     new_cert_url = directory['new-cert']
     print("URLs are:\n\tnew-reg: {}\n\tnew-authz: {}\n\tnew-cert: {}".format(
         new_reg_url, new_authz_url, new_cert_url))
-
-    print("Loading account key...")
-    privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
 
     print("Finding registration...")
     ((reg_url, _, _), nonce) = do_account_register(new_reg_url, nonce,
