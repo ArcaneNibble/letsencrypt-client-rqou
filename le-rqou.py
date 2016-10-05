@@ -28,6 +28,8 @@ CSR_PATH = 'test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 MAX_POLL_ATTEMPTS = 10
 ACME_CHALLENGE_DIR = '.'
+CERT_PATH_TMPL = 'test-{}.crt'
+CERT_PATH_SYMLINK = 'test.crt'
 
 
 class ACMEError(Exception):
@@ -316,6 +318,41 @@ def poll_authz(url):
         raise ACMEError(authz_data, e.headers)
 
 
+# Returns (url, nonce)
+@nonce_retry
+def do_new_cert(url, nonce, acckeypriv, acckeypub, csr):
+    payload = {
+        'resource': 'new-cert',
+        'csr': jose.utils.base64url_encode(csr).decode('utf-8')
+    }
+    fullpayload = _create_signed_object(payload, nonce, acckeypriv, acckeypub)
+
+    req = urllib.request.Request(url=url, data=fullpayload, method='POST')
+    try:
+        with urllib.request.urlopen(req) as f:
+            cert_loc = f.headers['Location']
+            new_nonce = f.headers['Replay-Nonce']
+            return (cert_loc, new_nonce)
+    except urllib.error.HTTPError as e:
+        new_cert_data = json.loads(e.read().decode('utf-8'))
+        new_nonce = e.headers['Replay-Nonce']
+        if new_cert_data['type'] == BAD_NONCE_ERROR:
+            raise ACMENonceError(new_cert_data, e.headers, new_nonce)
+        raise ACMEError(new_cert_data, e.headers)
+
+
+# FIXME: Don't poll immediately?
+# Returns data
+def poll_cert(url):
+    req = urllib.request.Request(url=url, method='GET')
+    try:
+        with urllib.request.urlopen(req) as f:
+            return f.read()
+    except urllib.error.HTTPError as e:
+        cert_err_data = e.read()
+        raise ACMEError(authz_data, e.headers)
+
+
 def key_thumbprint(pubkey):
     pubkey_json = json.dumps(pubkey, sort_keys=True, separators=(',', ':'))
     sha256 = hashlib.sha256(pubkey_json.encode('utf-8')).digest()
@@ -384,6 +421,24 @@ def main():
 
         if auth_data['status'] != 'valid':
             raise Exception("Authorization failed: " + str(auth_data))
+
+    print("Requesting cert...")
+    cert_url, nonce = do_new_cert(new_cert_url, nonce, privkey, pubkey, csr)
+
+    print("Cert is at {}".format(cert_url))
+
+    print("Polling for completion...")
+    cert_data = ""
+    for _ in range(MAX_POLL_ATTEMPTS):
+        cert_data = poll_cert(cert_url)
+
+        # FIXME: Ignores status code and poll interval
+        if len(cert_data) > 0:
+            break
+
+        time.sleep(1)
+
+    print(cert_data)
 
 if __name__ == '__main__':
     main()
