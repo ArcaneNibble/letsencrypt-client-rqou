@@ -190,6 +190,7 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
             with urllib.request.urlopen(req) as f:
                 reg_data = json.loads(f.read().decode('utf-8'))
                 nonce = f.headers['Replay-Nonce']
+                print(reg_data)
         except urllib.error.HTTPError as e:
             reg_data = json.loads(e.read().decode('utf-8'))
             new_nonce = e.headers['Replay-Nonce']
@@ -235,13 +236,51 @@ def load_csr(path):
     return (csr_der, domains)
 
 
+# Returns ((uri, data, headers), nonce)
+@nonce_retry
+def do_new_authz(url, nonce, acckeypriv, acckeypub, domain):
+    payload = {
+        'resource': 'new-authz',
+        'identifier': {
+            'type': 'dns',
+            'value': domain
+        }
+    }
+    fullpayload = _create_signed_object(payload, nonce, acckeypriv, acckeypub)
+
+    req = urllib.request.Request(url=url, data=fullpayload, method='POST')
+    try:
+        with urllib.request.urlopen(req) as f:
+            authz_uri = f.headers['Location']
+            authz_data = json.loads(f.read().decode('utf-8'))
+            new_nonce = f.headers['Replay-Nonce']
+            return ((authz_uri, authz_data, f.headers), new_nonce)
+    except urllib.error.HTTPError as e:
+        authz_data = json.loads(e.read().decode('utf-8'))
+        new_nonce = e.headers['Replay-Nonce']
+        if authz_data['type'] == BAD_NONCE_ERROR:
+            raise ACMENonceError(authz_data, e.headers, new_nonce)
+        raise ACMEError(authz_data, e.headers)
+
+
+# Returns the challenge object for the http challenge
+def find_http_challenge(authz_data):
+    for combination in authz_data['combinations']:
+        if len(combination) == 1:
+            idx = combination[0]
+            challenge = authz_data['challenges'][idx]
+            if challenge['type'] == 'http-01':
+                return challenge
+
+    raise Exception("Can't find http-01 challenge!")
+
+
 def main():
     print("Loading account key...")
     privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
 
     print("Loading CSR...")
-    print(load_csr(CSR_PATH))
-    return
+    csr, domains = load_csr(CSR_PATH)
 
     print("Poking directory...")
     directory, nonce = get_directory(API_EP)
@@ -257,6 +296,18 @@ def main():
                                                    REGISTRATION_EMAIL)
     nonce = do_tos(reg_url, nonce, privkey, pubkey)
     print("Registration is {}".format(reg_url))
+
+    for domain in domains:
+        print("Doing auth for \"{}\"...".format(domain))
+        ((auth_url, auth_data, _), nonce) = do_new_authz(new_authz_url, nonce,
+                                                         privkey, pubkey,
+                                                         domain)
+        print(auth_url, auth_data)
+
+        http_challenge = find_http_challenge(auth_data)
+        print(http_challenge)
+
+        # TODO: Do the challenge
 
 if __name__ == '__main__':
     main()
