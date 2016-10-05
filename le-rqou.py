@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 # Constants of various types
-USE_STAGING = True
+USE_STAGING = False
 if USE_STAGING:
     API_ROOT = 'https://acme-staging.api.letsencrypt.org'
     API_EP = API_ROOT + '/directory'
@@ -26,14 +26,14 @@ else:
 BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
 
-ACCOUNT_KEY_PATH = 'account_key.json'
-CSR_PATH = 'test.csr'
+ACCOUNT_KEY_PATH = '/storage/certrenewal/account_key.json'
+CSR_PATH = '/storage/certrenewal/test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 MAX_POLL_ATTEMPTS = 10
 ACME_CHALLENGE_DIR = '.'
-CERT_PATH_TMPL = 'test-{}.pem'
-CERT_PATH_SYMLINK = 'test.pem'
-CHAIN_PATH = 'chain.pem'
+CERT_PATH_TMPL = '/storage/certrenewal/robertou-tls-full-{}.pem'
+CERT_PATH_SYMLINK = '/storage/certrenewal/robertou-tls-full.pem'
+CHAIN_PATH = '/storage/certrenewal/robertou-tls-chain.pem'
 
 
 class ACMEError(Exception):
