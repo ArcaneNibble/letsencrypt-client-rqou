@@ -27,7 +27,7 @@ BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
 
 ACCOUNT_KEY_PATH = '/storage/certrenewal/account_key.json'
-CSR_PATH = '/storage/certrenewal/test.csr'
+CSR_PATH = '/storage/certrenewal/robertou.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 MAX_POLL_ATTEMPTS = 10
 ACME_CHALLENGE_DIR = '/var/www/acme-challenge'
