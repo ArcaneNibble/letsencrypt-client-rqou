@@ -1,6 +1,7 @@
 import asn1crypto.csr
 import asn1crypto.pem
 import Crypto.PublicKey.RSA
+import datetime
 import hashlib
 import jose.constants
 import jose.jwk
@@ -16,9 +17,11 @@ import urllib.request
 # Constants of various types
 USE_STAGING = True
 if USE_STAGING:
-    API_EP = 'https://acme-staging.api.letsencrypt.org/directory'
+    API_ROOT = 'https://acme-staging.api.letsencrypt.org'
+    API_EP = API_ROOT + '/directory'
 else:
-    API_EP = 'https://acme-v01.api.letsencrypt.org/directory'
+    API_ROOT = 'https://acme-v01.api.letsencrypt.org'
+    API_EP = API_ROOT + '/directory'
 
 BAD_NONCE_ERROR = 'urn:acme:error:badNonce'
 NONCE_RETRIES = 3
@@ -28,8 +31,9 @@ CSR_PATH = 'test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 MAX_POLL_ATTEMPTS = 10
 ACME_CHALLENGE_DIR = '.'
-CERT_PATH_TMPL = 'test-{}.crt'
-CERT_PATH_SYMLINK = 'test.crt'
+CERT_PATH_TMPL = 'test-{}.pem'
+CERT_PATH_SYMLINK = 'test.pem'
+CHAIN_PATH = 'chain.pem'
 
 
 class ACMEError(Exception):
@@ -342,12 +346,23 @@ def do_new_cert(url, nonce, acckeypriv, acckeypub, csr):
 
 
 # FIXME: Don't poll immediately?
-# Returns data
+# Returns (data, up)
 def poll_cert(url):
     req = urllib.request.Request(url=url, method='GET')
     try:
         with urllib.request.urlopen(req) as f:
-            return f.read()
+            cert_data = f.read()
+            up_link = None
+            link_headers = f.headers.get_all('Link')
+            if link_headers is not None:
+                for link in link_headers:
+                    # We always have only one link
+                    parsed_link = link_header.parse(link).links[0]
+                    for attr_key, attr_val in parsed_link.attr_pairs:
+                        if attr_key == 'rel' and attr_val == 'up':
+                            up_link = parsed_link.href
+                            break
+            return (cert_data, up_link)
     except urllib.error.HTTPError as e:
         cert_err_data = e.read()
         raise ACMEError(authz_data, e.headers)
@@ -363,7 +378,6 @@ def provision_challenge_file(token, keyauth):
     print("Provisioning: {} -> {}".format(keyauth, token))
     with open("{}/{}".format(ACME_CHALLENGE_DIR, token), 'wb') as f:
         f.write(keyauth)
-    input("aaaaa")
 
 
 def main():
@@ -429,8 +443,12 @@ def main():
 
     print("Polling for completion...")
     cert_data = ""
+    cert_chain_url = ""
     for _ in range(MAX_POLL_ATTEMPTS):
-        cert_data = poll_cert(cert_url)
+        cert_data, cert_chain_url = poll_cert(cert_url)
+        # FIXME: This is a hack and doesn't work in all cases
+        if cert_chain_url is not None and cert_chain_url[0] == '/':
+            cert_chain_url = API_ROOT + cert_chain_url
 
         # FIXME: Ignores status code and poll interval
         if len(cert_data) > 0:
@@ -438,7 +456,35 @@ def main():
 
         time.sleep(1)
 
-    print(cert_data)
+    chain = []
+    while cert_chain_url is not None:
+        print("Downloading chain ({})...".format(cert_chain_url))
+        chain_data, cert_chain_url = poll_cert(cert_chain_url)
+        # FIXME: This is a hack and doesn't work in all cases
+        if cert_chain_url is not None and cert_chain_url[0] == '/':
+            cert_chain_url = API_ROOT + cert_chain_url
+        chain.append(chain_data)
+
+    print("Saving files...")
+    cert_path = CERT_PATH_TMPL.format(
+        datetime.datetime.now().strftime('%Y%m%d'))
+    with open(cert_path, 'wb') as f:
+        f.write(asn1crypto.pem.armor('CERTIFICATE', cert_data))
+        # Write the chain as well
+        for chaincert in chain:
+            f.write(asn1crypto.pem.armor('CERTIFICATE', chaincert))
+
+    # Do the symlink update
+    try:
+        os.unlink(CERT_PATH_SYMLINK)
+    except FileNotFoundError:
+        pass
+    os.symlink(cert_path, CERT_PATH_SYMLINK)
+
+    with open(CHAIN_PATH, 'wb') as f:
+        for chaincert in chain:
+            f.write(asn1crypto.pem.armor('CERTIFICATE', chaincert))
+
 
 if __name__ == '__main__':
     main()
