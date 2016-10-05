@@ -8,6 +8,7 @@ import jose.jws
 import jose.utils
 import json
 import link_header
+import os
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +27,7 @@ ACCOUNT_KEY_PATH = 'account_key.json'
 CSR_PATH = 'test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
 MAX_POLL_ATTEMPTS = 10
+ACME_CHALLENGE_DIR = '.'
 
 
 class ACMEError(Exception):
@@ -320,6 +322,13 @@ def key_thumbprint(pubkey):
     return jose.utils.base64url_encode(sha256)
 
 
+def provision_challenge_file(token, keyauth):
+    print("Provisioning: {} -> {}".format(keyauth, token))
+    with open("{}/{}".format(ACME_CHALLENGE_DIR, token), 'wb') as f:
+        f.write(keyauth)
+    input("aaaaa")
+
+
 def main():
     print("Loading account key...")
     privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
@@ -348,18 +357,14 @@ def main():
         ((auth_url, auth_data, _), nonce) = do_new_authz(new_authz_url, nonce,
                                                          privkey, pubkey,
                                                          domain)
-        print(auth_url, auth_data)
 
         http_challenge = find_http_challenge(auth_data)
-        print(http_challenge)
 
         keyauth = http_challenge['token'].encode('utf-8') + b'.' + thumbprint
-        print(keyauth)
 
         challenge_url = http_challenge['uri']
-        print(challenge_url)
 
-        # TODO: Do the challenge provisioning
+        provision_challenge_file(http_challenge['token'], keyauth)
 
         nonce = do_authz_response(challenge_url, nonce, privkey, pubkey,
                                   keyauth)
@@ -373,7 +378,10 @@ def main():
                 break
 
             time.sleep(1)
-        print(auth_data)
+
+        # Delete provisioned file
+        os.remove("{}/{}".format(ACME_CHALLENGE_DIR, http_challenge['token']))
+
         if auth_data['status'] != 'valid':
             raise Exception("Authorization failed: " + str(auth_data))
 
