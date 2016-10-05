@@ -485,6 +485,8 @@ def main():
         for chaincert in chain:
             f.write(asn1crypto.pem.armor('CERTIFICATE', chaincert))
 
+    print("Done!")
+
 
 if __name__ == '__main__':
     main()
