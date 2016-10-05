@@ -1,11 +1,14 @@
 import asn1crypto.csr
 import asn1crypto.pem
 import Crypto.PublicKey.RSA
+import hashlib
 import jose.constants
 import jose.jwk
 import jose.jws
+import jose.utils
 import json
 import link_header
+import time
 import urllib.error
 import urllib.request
 
@@ -22,6 +25,7 @@ NONCE_RETRIES = 3
 ACCOUNT_KEY_PATH = 'account_key.json'
 CSR_PATH = 'test.csr'
 REGISTRATION_EMAIL = 'rqou@berkeley.edu'
+MAX_POLL_ATTEMPTS = 10
 
 
 class ACMEError(Exception):
@@ -190,7 +194,6 @@ def do_tos(url, nonce, acckeypriv, acckeypub):
             with urllib.request.urlopen(req) as f:
                 reg_data = json.loads(f.read().decode('utf-8'))
                 nonce = f.headers['Replay-Nonce']
-                print(reg_data)
         except urllib.error.HTTPError as e:
             reg_data = json.loads(e.read().decode('utf-8'))
             new_nonce = e.headers['Replay-Nonce']
@@ -275,9 +278,52 @@ def find_http_challenge(authz_data):
     raise Exception("Can't find http-01 challenge!")
 
 
+# Returns nonce
+# FIXME: The spec isn't too clear what exactly this should return
+@nonce_retry
+def do_authz_response(url, nonce, acckeypriv, acckeypub, keyauth):
+    payload = {
+        'resource': 'challenge',
+        'keyAuthorization': keyauth.decode('utf-8')
+    }
+    fullpayload = _create_signed_object(payload, nonce, acckeypriv, acckeypub)
+
+    req = urllib.request.Request(url=url, data=fullpayload, method='POST')
+    try:
+        with urllib.request.urlopen(req) as f:
+            new_nonce = f.headers['Replay-Nonce']
+            return new_nonce
+    except urllib.error.HTTPError as e:
+        authz_data = json.loads(e.read().decode('utf-8'))
+        new_nonce = e.headers['Replay-Nonce']
+        if authz_data['type'] == BAD_NONCE_ERROR:
+            raise ACMENonceError(authz_data, e.headers, new_nonce)
+        raise ACMEError(authz_data, e.headers)
+
+
+# FIXME: Don't poll immediately?
+# Returns data
+def poll_authz(url):
+    req = urllib.request.Request(url=url, method='GET')
+    try:
+        with urllib.request.urlopen(req) as f:
+            authz_data = json.loads(f.read().decode('utf-8'))
+            return authz_data
+    except urllib.error.HTTPError as e:
+        authz_data = json.loads(e.read().decode('utf-8'))
+        raise ACMEError(authz_data, e.headers)
+
+
+def key_thumbprint(pubkey):
+    pubkey_json = json.dumps(pubkey, sort_keys=True, separators=(',', ':'))
+    sha256 = hashlib.sha256(pubkey_json.encode('utf-8')).digest()
+    return jose.utils.base64url_encode(sha256)
+
+
 def main():
     print("Loading account key...")
     privkey, pubkey = load_private_key(ACCOUNT_KEY_PATH)
+    thumbprint = key_thumbprint(pubkey)
 
     print("Loading CSR...")
     csr, domains = load_csr(CSR_PATH)
@@ -307,7 +353,29 @@ def main():
         http_challenge = find_http_challenge(auth_data)
         print(http_challenge)
 
-        # TODO: Do the challenge
+        keyauth = http_challenge['token'].encode('utf-8') + b'.' + thumbprint
+        print(keyauth)
+
+        challenge_url = http_challenge['uri']
+        print(challenge_url)
+
+        # TODO: Do the challenge provisioning
+
+        nonce = do_authz_response(challenge_url, nonce, privkey, pubkey,
+                                  keyauth)
+
+        # Poll
+        print("Polling for completion...")
+        for _ in range(MAX_POLL_ATTEMPTS):
+            auth_data = poll_authz(auth_url)
+
+            if auth_data['status'] != 'pending':
+                break
+
+            time.sleep(1)
+        print(auth_data)
+        if auth_data['status'] != 'valid':
+            raise Exception("Authorization failed: " + str(auth_data))
 
 if __name__ == '__main__':
     main()
