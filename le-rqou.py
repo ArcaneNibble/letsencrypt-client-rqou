@@ -224,7 +224,7 @@ def load_csr(path):
     # CN
     subj = csr_obj['certification_request_info']['subject'].native
     if 'common_name' in subj:
-        cn = subj['common_name']
+        cn = subj['common_name'].encode('idna').decode('ascii')
         domains.add(cn)
 
     # SAN
@@ -241,6 +241,7 @@ def load_csr(path):
                         san = extn['extn_value']
                         break
     if san is not None:
+        san = [x.encode('idna').decode('ascii') for x in san]
         domains = domains.union(san)
 
     assert len(domains) > 0
